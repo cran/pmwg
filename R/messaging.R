@@ -25,8 +25,13 @@ accept_progress_bar <- function(min = 0, max = 1) {
     acc_sep = " | ",
     acc_msg = "New(%3d%%)"
   )
-  width <- nchar(lapply(component, gettextf, 100), "w")
-  width <- split(unname(width), names(component))
+  width <- lapply(component, function(x) {
+    if (grepl("%3d", x)) {
+      nchar(gettextf(x, 100))
+    } else {
+      nchar(x)
+    }
+  })
   width$extras <- sum(unlist(width)) - width$pchar
   width$term <- getOption("width")
   width$progress <- trunc((width$term - width$extras) / width$pchar)
@@ -113,20 +118,75 @@ update_progress_bar <- function(pb, value, extra = 0) {
 #'
 #' @keywords internal
 gibbs_step_err <- function(pmwgs, err_cond) {
-  store_tmp <- tempfile(
-    pattern = "pmwg_stage_samples_",
-    tmpdir = ".",
-    fileext = ".RDS"
-  )
   sampler_tmp <- tempfile(
     pattern = "pmwg_obj_",
     tmpdir = ".",
     fileext = ".RDS"
   )
-  message("\nError while generating new group level parameters")
+  message("ERROR: Error while generating new group level parameters")
   message(err_cond)
   traceback()
-  message("\nSaving current state of pmwgs object: ", sampler_tmp)
+  message("MESSAGE: Saving current state of pmwgs object: ", sampler_tmp)
+  # Remove NA values from the end of the sampler
+  pmwgs <- trim_na(pmwgs)
   saveRDS(pmwgs, file = sampler_tmp)
-  stop("Stopping execution")
+  stop("ERROR: gibbs_step_err")
+}
+
+#' Error handler for the particle selection call
+#'
+#' If an error was detected when selecting the winning particle, save the state
+#' of the samples and particles at that moment to help with debugging.
+#'
+#' @param subj The index of the subject where the error was detected.
+#' @param envir The enclosing environment of the function where the error
+#'   occurred.
+#' @param err_cond The original error condition that prompted this.
+#'
+#' @keywords internal
+particle_select_err <- function(subj, envir, err_cond) {
+  envir_tmp <- tempfile(
+    pattern = "pmwg_newsample_",
+    tmpdir = ".",
+    fileext = ".RData"
+  )
+  message(paste("ERROR: Error while selecting winning proposal particle",
+                "for subject number", subj))
+  message(err_cond)
+  traceback(err_cond)
+  message("MESSAGE: Saving environment in new_sample function: ", envir_tmp)
+  save(envir = envir, file = envir_tmp, list = names(envir))
+  stop("ERROR: particle_select_err")
+}
+
+#' Error handler forany error in new_sample function call(s)
+#'
+#' If an error was detected when generating new samples. Save the state
+#' of the samples and particles at that moment to help with debugging.
+#'
+#' @param pmwgs The pmwgs object for the current run.
+#' @param envir The environment of the function at this point in time.
+#' @param err_cond The original error condition that prompted this.
+#'
+#' @keywords internal
+new_sample_err <- function(pmwgs, envir, err_cond) {
+  envir_tmp <- tempfile(
+    pattern = "pmwg_runstage_",
+    tmpdir = ".",
+    fileext = ".RData"
+  )
+  sampler_tmp <- tempfile(
+    pattern = "pmwg_sampler_",
+    tmpdir = ".",
+    fileext = ".RDS"
+  )
+  message("ERROR: An error was detected during evaluation of the new_sample function.")
+  traceback(err_cond)
+  message("MESSAGE: Saving environment in run_stage function: ", envir_tmp)
+  save(envir = envir, file = envir_tmp, list = names(envir))
+  message("MESSAGE: Saving current state of pmwgs object: ", sampler_tmp)
+  # Remove NA values from the end of the sampler
+  pmwgs <- trim_na(pmwgs)
+  saveRDS(pmwgs, file = sampler_tmp)
+  stop("ERROR: new_sample_err")
 }

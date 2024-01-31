@@ -55,6 +55,9 @@
 #'   covariance matrix is scaled when generating particles from the previous
 #'   random effect. The default will be chosen based on the number of random
 #'   effects in the model.
+#' @param p_accept A value between 0 and 1 that will flexibly tune epsilon to
+#'   achieve an acceptance ratio close to what you set p_accept to. The default
+#'   is set at 0.8.
 #' @param mix A vector of floats that controls the mixture of different sources
 #'   for particles. The function \code{\link{numbers_from_proportion}} is
 #'   passed this value and includes extra details on what is accepted.
@@ -64,25 +67,41 @@
 #' @examples
 #' library(rtdists)
 #' sampled_forstmann$data <- forstmann
-#' run_stage(sampled_forstmann, "sample", iter = 1, particles = 20)
+#' run_stage(sampled_forstmann, "sample", iter = 1, particles = 10)
 #' @export
 run_stage <- function(pmwgs,
                       stage,
                       iter = 1000,
-                      particles = 1000,
+                      particles = 100,
                       display_progress = TRUE,
                       n_cores = 1,
-                      n_unique = ifelse(stage == "adapt", 20, NA),
+                      n_unique = ifelse(stage == "adapt", 100, NA),
                       epsilon = NULL,
+                      p_accept = .8,
                       mix = NULL,
-                      pdist_update_n = ifelse(stage == "sample", 500, NA)) {
+                      pdist_update_n = ifelse(stage == "sample", 50, NA)) {
   # Set defaults for NULL values
-  epsilon <- set_epsilon(pmwgs$n_pars, epsilon)
+  subj_epsilon <- pmwgs$samples$epsilon[, pmwgs$samples$idx]
+  if (is.null(subj_epsilon)) {
+    message("ERROR: no subject specific epsilon values found in sampler object")
+    stop("Try running augment_sampler_epsilon(sampler) first")
+  }
+
+  if (is.na(subj_epsilon[1])) {
+    epsilon <- set_epsilon(pmwgs$n_pars, epsilon)
+    subj_epsilon <- rep(epsilon, pmwgs$n_subjects)
+  }
+
   mix <- set_mix(stage, mix)
   # Test passed arguments/defaults for correctness
   do.call(check_run_stage_args, as.list(environment()))
+
+  # Hyper parameters for epsilon tuning.
+  # See Garthwaite, P. H., Fan, Y., & Sisson, S. A. (2016).
+  alpha_star <- -stats::qnorm(p_accept / 2)
+  n0 <- round(5 / (p_accept * (1 - p_accept)))
   # Set necessary local variables
-  .n_unique <- n_unique
+  .unique_inc <- 20
   apply_fn <- lapply
   # Set stable (fixed) new_sample argument for this run
   stable_args <- list(
@@ -94,7 +113,6 @@ run_stage <- function(pmwgs,
     # efficient arguments will be generated if needed below
     mix_proportion = mix,
     likelihood_func = pmwgs$ll_func,
-    epsilon = epsilon,
     subjects = pmwgs$subjects
   )
   if (n_cores > 1) {
@@ -118,6 +136,8 @@ run_stage <- function(pmwgs,
   }
   start_iter <- pmwgs$samples$idx
 
+  collected_msgs <- list()
+
   # Main iteration loop
   for (i in 1:iter) {
     if (display_progress) {
@@ -137,9 +157,16 @@ run_stage <- function(pmwgs,
     )
 
     iter_args <- list(
-      parameters = pars
+      parameters = pars,
+      epsilon = subj_epsilon
     )
+
     tmp <- do.call(apply_fn, c(stable_args, iter_args))
+    lapply(tmp, function(x) {
+      if (inherits(x, "try-error")) {
+        new_sample_err(pmwgs, parent.env(environment()), x)
+      }
+    })
 
     ll <- unlist(lapply(tmp, attr, "ll"))
     alpha <- array(unlist(tmp), dim = dim(pars$alpha))
@@ -153,20 +180,34 @@ run_stage <- function(pmwgs,
     pmwgs$samples$idx <- j
     pmwgs$samples$subj_ll[, j] <- ll
     pmwgs$samples$a_half[, j] <- pars$a_half
+    pmwgs$samples$epsilon[, j] <- subj_epsilon
+
+    # Epsilon tuning. See Garthwaite, P. H., Fan, Y., & Sisson, S. A. (2016).
+    if (!is.null(p_accept)) {
+      if (j > n0) {
+        acc <-  pmwgs$samples$alpha[1, , j] != pmwgs$samples$alpha[1, , (j - 1)]
+        subj_epsilon <- update_epsilon(subj_epsilon, acc, p_accept, j,
+                                       pmwgs$n_pars, alpha_star)
+      }
+    }
 
     if (stage == "adapt") {
       res <- test_sampler_adapted(pmwgs, n_unique, i)
-      if (res == "success") {
+      if (res[1] == "success") {
+        collected_msgs <- c(collected_msgs, res[2])
         break
-      } else if (res == "increase") {
-        n_unique <- n_unique + .n_unique
+      } else if (res[1] == "increase") {
+        n_unique <- n_unique + .unique_inc
+        collected_msgs <- c(collected_msgs, res[2])
       }
     }
   }
   if (display_progress) close(pb)
+  if (length(collected_msgs) > 0) lapply(collected_msgs, cat)
   if (stage == "adapt") {
     if (i == iter) {
       message(paste(
+        "WARNING:",
         "Particle Metropolis within Gibbs Sampler did not",
         "finish adaptation phase early (all", i, "iterations were",
         "run).\nYou should examine your samples and perhaps start",
@@ -239,6 +280,7 @@ new_sample <- function(s, data, num_particles, parameters,
   mu <- parameters$tmu
   sig2 <- parameters$tsig
   subj_mu <- parameters$alpha[, s]
+  subj_epsilon <- epsilon[s]
   if (is.null(likelihood_func)) stop("likelihood_func is a required argument")
 
   # Create proposals for new particles
@@ -247,7 +289,7 @@ new_sample <- function(s, data, num_particles, parameters,
     mix_proportion = mix_proportion,
     prop_mu = e_mu,
     prop_sig2 = e_sig2,
-    epsilon = epsilon
+    epsilon = subj_epsilon
   )
   # Put the current particle in slot 1.
   proposals[1, ] <- subj_mu
@@ -265,7 +307,7 @@ new_sample <- function(s, data, num_particles, parameters,
   prop_density <- mvtnorm::dmvnorm(
     x = proposals,
     mean = subj_mu,
-    sigma = sig2 * (epsilon^2)
+    sigma = sig2 * (subj_epsilon^2)
   )
   # Density of efficient proposals
   if (mix_proportion[3] != 0) {
@@ -284,7 +326,12 @@ new_sample <- function(s, data, num_particles, parameters,
   # log of importance weights.
   l <- lw + lp - lm
   weights <- exp(l - max(l))
-  idx <- sample(x = num_particles, size = 1, prob = weights)
+  tryCatch(
+    idx <- sample(x = num_particles, size = 1, prob = weights),
+    error = function(err_cond) {
+      particle_select_err(s, parent.env(environment()), err_cond)
+    }
+  )
   winner <- proposals[idx, ]
   attr(winner, "ll") <- lw[idx]
   winner
@@ -405,7 +452,7 @@ set_epsilon <- function(n_pars, epsilon) {
     }
     message(
       sprintf(
-        "Epsilon has been set to %.1f based on number of parameters",
+        "MESSAGE: Epsilon has been set to %.1f based on number of parameters",
         epsilon
       )
     )
@@ -432,7 +479,7 @@ set_mix <- function(stage, mix) {
     }
     message(
       sprintf(
-        "mix has been set to c(%s) based on the stage being run",
+        "MESSAGE: mix has been set to c(%s) based on the stage being run",
         paste(mix, collapse = ", ")
       )
     )
@@ -466,7 +513,7 @@ set_proposal <- function(i, stage, pmwgs, pdist_update_n) {
   }
 
   tryCatch(
-    prop_args <- try(create_efficient(pmwgs)),
+    prop_args <- create_efficient(pmwgs),
     error = function(err_cond) {
       outfile <- tempfile(
         pattern = "PMwG_err_",
@@ -474,13 +521,13 @@ set_proposal <- function(i, stage, pmwgs, pdist_update_n) {
         fileext = ".RData"
       )
       msg <- paste(
-        "An error was detected whilst creating conditional",
-        "distribution.\n",
-        "Saving current state of environment in file:",
-        outfile
+        "ERROR: Unrecoverable error in conditional distribution creation.\n",
+        err_cond,
+        "MESSAGE: Saving current state of environment in file:", outfile
       )
       save.image(outfile)
-      stop(msg)
+      message(msg)
+      stop("Quitting")
     }
   )
   prop_args
@@ -504,6 +551,8 @@ check_run_stage_args <- function(pmwgs,
                                  n_cores,
                                  n_unique,
                                  epsilon,
+                                 subj_epsilon,
+                                 p_accept,
                                  mix,
                                  pdist_update_n) {
   asserts <- makeAssertCollection()
@@ -529,8 +578,9 @@ check_run_stage_args <- function(pmwgs,
   } else {
     assert_scalar_na(n_unique, add = asserts)
   }
-
   assert_double(epsilon, lower = 0.0, upper = 1.0, len = 1, add = asserts)
+  assert_double(subj_epsilon, lower = 0.0, upper = 1.0, len = 1, add = asserts)
+  assert_double(p_accept, lower = 0.0, upper = 1.0, len = 1, add = asserts)
   assert_double(mix, lower = 0.0, upper = 1.0, len = 3, add = asserts)
   assert_true(all.equal(sum(mix), 1), add = asserts)
 
@@ -573,4 +623,34 @@ accept_rate <- function(pmwgs, window_size = 200) {
     2,
     mean
   )
+}
+
+#' Update the subject specific scaling parameters (epsilon)
+#'
+#' Update the subject specific scaling parameter according to procedures
+#' outlined in  P. H. Garthwaite, Y. Fan & S. A. Sisson (2016) Adaptive optimal
+#' scaling of Metropolis–Hastings algorithms using the Robbins–Monro process,
+#' Communications in Statistics - Theory and Methods, 45:17, 5098-5111,
+#' DOI: 10.1080/03610926.2014.936562
+#'
+#' @param epsilon The scaling parameter for all subjects
+#' @param acc A boolean vector, TRUE if current sample != last sample
+#' @param p The target sample acceptance rate (0-1)
+#' @param i The current iteration for sampling
+#' @param d The number of parameters for the model
+#' @param alpha A hyperparameter for the epsilon tuning
+#'
+#' @return A vector with the new subject specific epsilon values
+#'
+#' @keywords internal
+update_epsilon <- function(epsilon, acc, p, i, d, alpha) {
+  # optimal steplength constant (Proposition 5)
+  opt_step_const <- sqrt(2 * pi) * exp(alpha^2 / 2) / (2 * alpha)
+  # Linear function of 1/d  (where d is size of multivariate dimension)
+  # Eqn (7)
+  c <- (1 - 1 / d) * opt_step_const + 1 / (d * p * (1 - p))
+  theta <- log(epsilon)
+  # Robbins-Monro process - Eqn 1
+  theta <- theta + c * (acc - p) / max(200, i / d)
+  return(exp(theta))
 }

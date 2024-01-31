@@ -14,9 +14,13 @@
 #' means must be a vector of length 5 and the covariance matrix must be an array
 #' of 5 x 5.
 #'
-#' Alternatively the if argument values for the starting points are left at the
-#' default (NULL) then starting points will be sampled from the prior for group
-#' level values (model parameters and covariance matrix)
+#' If the start_mu and start_sig arguments are left at the default (NULL) then
+#' start_mu will be sampled from a normal distribution with mean as the prior
+#' mean for eac variable and sd as the square of the variance from the prior
+#' covariance matrix. start_sig by default is sampled from an inverse wishart
+#' (IW) distribution. For a model with the number of parameters N the degrees of
+#' freedom of the IW distribution is set to N*3 and the scale matrix is the
+#' identity matrix of size NxN.
 #'
 #' @param pmwgs The sampler object that provides the parameters.
 #' @param start_mu An array of starting values for the group means
@@ -52,21 +56,23 @@
 #'   c("b1", "b2", "b3", "A", "v1", "v2", "t0"),
 #'   lba_ll
 #' )
-#' sampler <- init(sampler)
+#' sampler <- init(sampler, particles=10)
 #' @export
 init <- function(pmwgs, start_mu = NULL, start_sig = NULL,
-                 display_progress = TRUE, particles = 1000) {
+                 display_progress = TRUE, particles = 100) {
   if (is.null(attr(pmwgs, "class"))) {
-    print("No object to add start points to")
+    message("ERROR: No object to add start points to")
   }
-  # If no starting point for group mean just use zeros
-  if (is.null(start_mu)) start_mu <- stats::rnorm(pmwgs$n_pars, sd = 1)
+  # If no starting point for group mean just sample from prior
+  if (is.null(start_mu)) {
+    start_mu <- stats::rnorm(
+      pmwgs$n_pars,
+      mean = pmwgs$prior$theta_mu_mean,
+      sd = sqrt(diag(pmwgs$prior$theta_mu_var)))
+  }
   # If no starting point for group var just sample from inverse wishart
   if (is.null(start_sig)) {
-    start_sig <- MCMCpack::riwish(
-      pmwgs$n_pars * 3,
-      diag(pmwgs$n_pars)
-    )
+    start_sig <- riwish(pmwgs$n_pars * 3, diag(pmwgs$n_pars))
   }
   n_particles <- particles
   # Sample the mixture variables' initial values.
@@ -74,7 +80,7 @@ init <- function(pmwgs, start_mu = NULL, start_sig = NULL,
   # Create and fill initial random effects for each subject
   alpha <- array(NA, dim = c(pmwgs$n_pars, pmwgs$n_subjects))
   if (display_progress) {
-    cat("Sampling Initial values for random effects\n")
+    message("MESSAGE: Sampling Initial values for random effects")
     pb <- utils::txtProgressBar(min = 0, max = pmwgs$n_subjects, style = 3)
   }
   likelihoods <- array(NA_real_, dim = c(pmwgs$n_subjects))
@@ -139,14 +145,14 @@ gibbs_step <- function(sampler) {
   theta_temp <- last$alpha - tmu
   cov_temp <- (theta_temp) %*% (t(theta_temp))
   B_half <- 2 * hyper$v_half * diag(1 / last$a_half) + cov_temp # nolint
-  tsig <- MCMCpack::riwish(hyper$k_half, B_half) # New sample for group variance
+  tsig <- riwish(hyper$k_half, B_half) # New sample for group variance
   tsinv <- MASS::ginv(tsig)
 
   # Sample new mixing weights.
   a_half <- 1 / stats::rgamma(
     n = sampler$n_pars,
     shape = hyper$v_shape,
-    scale = 1 / (hyper$v_half + diag(tsinv) + hyper$A_half)
+    scale = 1 / (hyper$v_half * diag(tsinv) + hyper$A_half)
   )
   list(
     tmu = tmu,

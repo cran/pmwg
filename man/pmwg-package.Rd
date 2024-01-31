@@ -15,7 +15,7 @@ subject random effects in a hierarchical Bayesian way.
 }
 \section{Documentation}{
 
-The documentation found at \url{https://newcastlecl.github.io/samplerDoc/}
+The documentation found at
 contains background information and motivation for the approach used in
 this package and several detailed examples of the package in action. It also
 includes a list of common problems and associated troubleshooting steps.
@@ -45,8 +45,8 @@ model. \emph{Journal of Mathematical Psychology, 96}, 102368.
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://github.com/newcastlecl/pmwg}
-  \item Report bugs at \url{https://github.com/newcastlecl/pmwg/issues}
+  \item \url{https://github.com/university-of-newcastle-research/pmwg}
+  \item Report bugs at \url{https://github.com/university-of-newcastle-research/pmwg/issues}
 }
 
 }
@@ -61,6 +61,7 @@ Authors:
   \item David Gunawan \email{dgunawan@uow.edu.au} (Author of original MATLAB code)
   \item Guy Hawkins \email{guy.hawkins@newcastle.edu.au}
   \item Scott Brown \email{scott.brown@newcastle.edu.au} (Original translation from MATLAB to R) [translator]
+  \item Niek Stevenson \email{niek.stevenson@gmail.com}
 }
 
 }

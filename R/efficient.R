@@ -78,6 +78,10 @@ conditional_parms <- function(s, samples) {
   )
   mu_tilde <- apply(all_samples, 1, mean)
   sigma_tilde <- stats::var(t(all_samples))
+  if (!isSymmetric(sigma_tilde))
+    stop("covariance matrix for subject #", s, " not symmetric")
+  if (any(eigen(sigma_tilde, TRUE, only.values = TRUE)$values < 1e-08))
+    stop("covariance matrix for subject #", s, " not positive definite")
   condmvn <- condMVNorm::condMVN(
     mean = mu_tilde,
     sigma = sigma_tilde,
@@ -86,7 +90,8 @@ conditional_parms <- function(s, samples) {
     X.given = c(
       samples$theta_mu[, n_iter],
       unwind(samples$theta_sig[, , n_iter])
-    )
+    ),
+    check.sigma = FALSE
   )
   list(cmeans = condmvn$condMean, cvars = condmvn$condVar)
 }
@@ -99,36 +104,34 @@ conditional_parms <- function(s, samples) {
 #'   for each subject.
 #' @param i The number for the current iteration of the sampler
 #'
-#' @return A string representing successful/unsuccessful adaptation. Can be one
-#'   of c("success", "continue", "increase")
+#' @return A list containing a string representing successful/unsuccessful
+#'   adaptation and an optional message. The string representing the success
+#'   or failure can be one of c("success", "continue", "increase")
 #'
 #' @keywords internal
 test_sampler_adapted <- function(pmwgs, n_unique, i) {
+  fail_msg <- "values used in failed attempt to create proposal distribution"
+  succ_msg <- "iterations before successful adaptation"
   if (i < n_unique) {
     return("continue")
   }
   test_samples <- extract_samples(pmwgs, stage = "adapt")
   if (check_adapted(test_samples$alpha, unq_vals = n_unique)) {
-    message("Enough unique values detected: ", n_unique)
-    message("Testing proposal distribution creation")
     attempt <- try({
       lapply(
         X = 1:pmwgs$n_subjects,
         FUN = conditional_parms,
         samples = test_samples
       )
-    })
-    if (class(attempt) == "try-error") {
-      warning("An problem was encountered creating proposal distribution")
-      warning("Increasing required unique values and continuing adaptation")
-      return("increase")
-    }
-    else {
-      message("Successfully adapted after ", i, "iterations - stopping early")
-      return("success")
+    },
+    silent = TRUE)
+    if (inherits(attempt, "try-error")) {
+      return(list("increase", paste("WARNING:", n_unique, fail_msg, "\n")))
+    } else {
+      return(list("success", paste("MESSAGE:", i, succ_msg, "\n")))
     }
   }
-  return("continue")
+  return(list("continue"))
 }
 
 

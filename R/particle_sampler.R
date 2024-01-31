@@ -12,7 +12,7 @@
 #' @param pars The list of parameter names to be used in the model
 #' @param ll_func A log likelihood function that given a list of parameter
 #'   values and a data frame (or other data store) containing subject data will
-#'   return the log likelihood of \code{x} given \code{data}.
+#'   return the log likelihood of \code{data} given \code{x}.
 #' @param prior Specification of the prior distribution for the model
 #'   parameters. It should be a list with two elements, \code{theta_mu_mean} and
 #'   \code{theta_mu_var} which fully specify the prior distribution. If left as
@@ -43,12 +43,11 @@ pmwgs <- function(data, pars, ll_func, prior = NULL) {
   # Checking and default priors
   prior_default <- list(
     theta_mu_mean = rep(0, n_pars),
-    theta_mu_var = diag(rep(1, n_pars))
+    theta_mu_var = diag(n_pars)
   )
   if (is.null(prior)) {
     prior <- prior_default
-  }
-  else {
+  } else {
     if (!identical(names(prior), names(prior_default))) {
       stop(paste(
         "pmwgs prior should be a list with two elements,",
@@ -57,7 +56,7 @@ pmwgs <- function(data, pars, ll_func, prior = NULL) {
         "that is the prior for the variance of the group-level mean",
         "parameters"))
     }
-    if (!identical(lapply(prior, dim), lapply(prior_default, dim)) |
+    if (!identical(lapply(prior, dim), lapply(prior_default, dim)) ||
         !identical(lapply(prior, length), lapply(prior_default, length))) {
       stop(paste(
         "pmwgs prior list elements specified with incorrect shape.",
@@ -81,7 +80,7 @@ pmwgs <- function(data, pars, ll_func, prior = NULL) {
     init = FALSE
   )
   attr(sampler, "v_half") <- v_half
-  attr(sampler, "A_half") <- A_half
+  attr(sampler, "A_half") <- A_half  #nolint
   attr(sampler, "k_half") <- k_half
   attr(sampler, "v_shape") <- v_shape
   class(sampler) <- "pmwgs"

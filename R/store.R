@@ -58,7 +58,7 @@ wind <- function(var_vector, ...) {
 #' Create a new list for storage samples in the pmwgs object
 #'
 #' @param par_names The names of each parameter as a character vector
-#' @param subjects_ids The unique ID of each subjects as a character vector
+#' @param subject_ids The unique ID of each subjects as a character vector
 #' @param iters The number of iterations to be pre-allocated
 #' @param stage The stage for which the samples will be created. Should be one
 #'   of \code{c("init", "burn", "adapt", "sample")}
@@ -85,6 +85,11 @@ sample_store <- function(par_names, subject_ids, iters = 1, stage = "init") {
       dimnames = list(par_names, par_names, NULL)
     ),
     stage = array(stage, iters),
+    epsilon = array(
+      NA_real_,
+      dim = c(n_subjects, iters),
+      dimnames = list(subject_ids, NULL)
+    ),
     subj_ll = array(
       NA_real_,
       dim = c(n_subjects, iters),
@@ -132,6 +137,12 @@ extend_sampler <- function(sampler, n_samples, stage) {
   new_alph[, , - (start:end)] <- old$alpha
   sampler$samples$alpha <- new_alph
 
+  new_epsilon <- array(NA_real_,
+                   dim = dim(old$epsilon) + c(0, n_samples),
+                   dimnames = list(subject_ids, NULL))
+  new_epsilon[, - (start:end)] <- old$epsilon
+  sampler$samples$epsilon <- new_epsilon
+
   new_sll <- array(NA_real_,
                    dim = dim(old$subj_ll) + c(0, n_samples),
                    dimnames = list(subject_ids, NULL))
@@ -163,6 +174,7 @@ trim_na <- function(sampler) {
   sampler$samples$subj_ll <- sampler$samples$subj_ll[, 1:idx]
   sampler$samples$a_half <- sampler$samples$a_half[, 1:idx]
   sampler$samples$stage <- sampler$samples$stage[1:idx]
+  sampler$samples$epsilon <- sampler$samples$epsilon[, 1:idx]
   sampler
 }
 
@@ -196,7 +208,7 @@ trim_na <- function(sampler) {
 #' @examples
 #' new_pmwgs <- relabel_samples(sampled_forstmann, 17:21)
 #' @export
-relabel_samples <- function(sampler, indices, from="burn", to="adapt") {
+relabel_samples <- function(sampler, indices, from = "burn", to = "adapt") {
   old_stage <- sampler$samples$stage
   if (!all(old_stage[indices] %in% from)) {
     stop(paste("Not all samples were from the", from, "stage"))
@@ -295,4 +307,24 @@ as_mcmc <- function(sampler, selection = "theta_mu", filter = stages) {
     ), sampler$subjects))
   }
   stop("Argument `selection` should be one of theta_mu, theta_sig, alpha")
+}
+
+#' Augment existing sampler object to have subject specific epsilon storage
+#'
+#' Older sampler object will be missing subject specific scaling parameter
+#' (epsilon) storage, and running a stage with an updated pmwg will fail. To
+#' fix this you can run the augment_sampler_epsilon function to fill the
+#' appropriate array internals with NA values
+#'
+#' @param sampler The sampler object to augment
+#'
+#' @return A pmwgs sampler with epsilon array set internally
+#'
+#' @export
+augment_sampler_epsilon <- function(sampler) {
+  new_epsilon <- array(NA_real_,
+                   dim = c(sampler$n_subjects, sampler$samples$idx),
+                   dimnames = list(sampler$subjects, NULL))
+  sampler$samples$epsilon <- new_epsilon
+  sampler
 }
